@@ -1,0 +1,418 @@
+#!/usr/bin/env bash
+# vim: ft=bash sw=4 ts=4 et
+set -eu
+set -o pipefail
+
+# NOTE: The / character in base64 is replaced with _
+
+_PROG_NAME="$0"
+_PROG_NAME="${_PROG_NAME##*/}"
+
+_NL=$'\n'
+_FS=$'\x1F' # ASCII Unit Separator
+IFS="${_FS}"
+
+p()  { printf '%s' "$@"; }
+pn() { printf '%s\n' "$@"; }
+
+
+usage() {
+    pn \
+        'Usage:' \
+        "  ${_PROG_NAME} <command> [args]" \
+        '' \
+        'Commands:' \
+        '  add <url> [-t <title>] [-c <comment>] [-x <tags>] [-o]' \
+        '  list [-m]' \
+        '  show <url>' \
+        '  remove <url>' \
+        '  search <query> [-u] [-t] [-c] [-x]' \
+        '' \
+        'Notes:' \
+        '  an existing bookmark for an url will not be overwritten when adding unless' \
+        '    -o is used' \
+        '  `remove` expects an URL exactly matching one from `list`' \
+        '  `search` by default searches in all fields, you can specify combination of' \
+        '    -u (urls), -t (titles), -c (comments), -x (tags) to specify which fields' \
+        '    are to be included' \
+        '  the tags option is stored literally (it is not split for by e.g. , or \t)' \
+        '  searching is done via grep -E'
+}
+
+
+## Add bookmark {{{
+cmd_add() {
+    local URL="$1"; shift 1
+    local TITLE="" COMMENT="" TAGS="" OVERWRITE="0"
+
+    if ! [ -d "${HOME}/.bk" ]; then
+        if [ -e "${HOME}/.bk" ]; then
+            pn '[E]: ~/.bk exists, but not a directory!' >&2
+            return 1
+        fi
+        mkdir -p "${HOME}/.bk"
+    fi
+
+    ## Handle parsing arguments {{{
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            "-t")
+                if [ "$#" -lt 2 ]; then
+                    pn '[E]: No argument for '"$1" >&2
+                    return 101
+                fi
+                TITLE="$2"
+                shift 2
+                ;;
+
+            "-c")
+                if [ "$#" -lt 2 ]; then
+                    pn '[E]: No argument for '"$1" >&2
+                    return 101
+                fi
+                COMMENT="$2"
+                shift 2
+                ;;
+
+            "-x")
+                if [ "$#" -lt 2 ]; then
+                    pn '[E]: No argument for '"$1" >&2
+                    return 101
+                fi
+                TAGS="$2"
+                shift 2
+                ;;
+
+            "-o")
+                OVERWRITE="1"
+                shift 1
+                ;;
+
+            *)
+                pn '[E]: Unknown option to `add`: '"$1" >&2
+                return 101
+                ;;
+        esac
+    done
+    ## }}}
+
+    local B64
+    B64="$(p "${URL}" | base64 | tr '/' '_')"
+
+    if [ -e "${HOME}/.bk/${B64}" ] && [ "${OVERWRITE}" != "1" ]; then
+        pn '[W]: Aborting since bookmark exists and no overwrite flag' >&2
+        return 0
+    fi
+
+    printf '%s'"${_FS}" \
+        "title:$TITLE" \
+        "comment:$COMMENT" \
+        "tags:$TAGS" \
+            > "${HOME}/.bk/${B64}"
+
+    return 0
+}
+## }}}
+
+## List added bookmarks {{{
+cmd_list() {
+    [ -e "${HOME}/.bk" ] || return 0
+
+    if ! [ -d "${HOME}/.bk" ]; then
+        pn '[E]: ~/.bk exists, but not a directory!' >&2
+        return 1
+    fi
+
+    # NOTE: the sed command is for removing time information and path
+    local SORTED_B64
+    SORTED_B64="$(\
+        find "${HOME}/.bk" -mindepth 1 -maxdepth 1 -print0 | \
+            xargs -0 stat -c'%Y /%n' | \
+            sort -n | \
+            sed 's@^.*/@@' | \
+            tr "${_NL}" "${_FS}")"
+
+    if [ "$#" -gt 0 ] && [ "$1" = "-m" ]; then
+        # Print with metadata
+        local BKMK
+        for BKMK in ${SORTED_B64}; do
+            URL="$(p "${BKMK}" | tr '_' '/' | base64 -d)"
+            cmd_show "${URL}"
+            printf '\n'
+        done
+    else
+        # Print w/o metadata
+        local BKMK URL MTIME
+        for BKMK in ${SORTED_B64}; do
+            URL="$(p "${BKMK}" | tr '_' '/' | base64 -d)"
+            MTIME="$(date --date="$(stat -c'%y' "${HOME}/.bk/${BKMK}")" "+%Y-%m-%d %H:%M:%S")"
+
+            pn "[${MTIME}] ${URL}"
+        done
+    fi
+
+    return 0
+}
+## }}}
+
+## Show bookmark with metadata {{{
+cmd_show() {
+    local URL="$1"; shift 1
+
+    local B64
+    B64="$(p "${URL}" | base64 | tr '/' '_')"
+
+    if ! [ -e "${HOME}/.bk/${B64}" ]; then
+        pn '[E]: URL not found in bookmarks: '"$URL" >&2
+        return 1
+    fi
+
+    local DATA
+    DATA="$(cat "${HOME}/.bk/${B64}")"
+
+    local TITLE="" COMMENT="" TAGS=""
+    local FIELD F_TYPE
+    for FIELD in ${DATA}; do
+        F_TYPE="$(p "${FIELD}" | grep -Eoa '^[^:]+:' 2>/dev/null)"
+
+        case "${F_TYPE}" in
+            "title:")
+                TITLE="${FIELD#title:}" ;;
+            "comment:")
+                COMMENT="${FIELD#comment:}" ;;
+            "tags:")
+                TAGS="${FIELD#tags:}" ;;
+            *)
+                pn '[E]: Unrecognized field type `'"${F_TYPE%:}"'` in ~/.bk/'"${B64}" >&2
+                return 1
+                ;;
+        esac
+    done
+
+    pn "URL:" "  ${URL}"
+
+    if [ -n "${TITLE}" ]; then
+        pn "Title:"
+        pn "${TITLE}" | sed 's/^/  /'
+    fi
+
+    if [ -n "${TAGS}" ]; then
+        pn "Tags:"
+        pn "${TAGS}" | sed 's/^/  /'
+    fi
+
+    if [ -n "${COMMENT}" ]; then
+        pn "Comment:"
+        pn "${COMMENT}" | sed 's/^/  /'
+    fi
+
+    return 0
+}
+## }}}
+
+## Remove bookmark {{{
+cmd_remove() {
+    local URL="$1"; shift 1
+
+    [ -e "${HOME}/.bk" ] || return 0
+
+    if ! [ -d "${HOME}/.bk" ]; then
+        pn '[E]: ~/.bk exists, but not a directory!' >&2
+        return 1
+    fi
+
+    local B64
+    B64="$(p "${URL}" | base64 | tr '/' '_')"
+
+    if ! [ -e "${HOME}/.bk/${B64}" ]; then
+        pn '[E]: URL not found in bookmarks: '"$URL" >&2
+        return 1
+    fi
+
+    rm -f "${HOME}/.bk/${B64}"
+    return 0
+}
+## }}}
+
+## Search bookmarks {{{
+cmd_search() {
+    local QUERY="$1"; shift 1
+    local S_URL="0" S_TITLE="0" S_COMMENT="0" S_TAGS="0"
+
+    ## Handle parsing arguments {{{
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            "-u")
+                S_URL="1"
+                shift 1
+                ;;
+
+            "-t")
+                S_TITLE="1"
+                shift 1
+                ;;
+
+            "-c")
+                S_COMMENT="1"
+                shift 1
+                ;;
+
+            "-x")
+                S_TAGS="1"
+                shift 1
+                ;;
+
+            *)
+                pn '[E]: Unknown option to `search`: '"$1" >&2
+                return 101
+                ;;
+        esac
+    done
+    ## }}}
+
+    local SORTED_B64
+    SORTED_B64="$(\
+        find "${HOME}/.bk" -mindepth 1 -maxdepth 1 -print0 | \
+            xargs -0 stat -c'%Y /%n' | \
+            sort -n | \
+            sed 's@^.*/@@' | \
+            tr "${_NL}" "${_FS}")"
+
+    if [ "${S_URL}${S_TITLE}${S_COMMENT}${S_TAGS}" = "0000" ]; then
+        local _PATHS=""
+
+        local BKMK
+        for BKMK in ${SORTED_B64}; do
+            _PATHS="${_PATHS}${HOME}/.bk/${BKMK}${_FS}"
+        done
+
+        local RESULT
+        for RESULT in $({ grep -E -l "${QUERY}" ${_PATHS} || :; } | \
+            sed 's@^.*/@@' | tr "${_NL}" "${_FS}"); do
+
+            p "${RESULT}" | tr '_' '/' | base64 -d
+            pn ''
+        done
+
+        return 0
+    fi
+
+    local BKMK
+    for BKMK in ${SORTED_B64}; do
+        URL="$(p "${BKMK}" | tr '_' '/' | base64 -d)"
+
+        if [ "${S_URL}" = "1" ]; then
+            if pn "${URL}" | grep -E "${QUERY}" >/dev/null 2>&1; then
+
+                pn "${URL}"
+                continue
+            fi
+        fi
+
+        local DATA
+        DATA="$(cat "${HOME}/.bk/${BKMK}")"
+
+        local SEARCH_DATA=""
+
+        local FIELD
+        for FIELD in ${DATA}; do
+            F_TYPE="$(p "${FIELD}" | grep -Eoa '^[^:]+:')"
+
+            case "${F_TYPE}" in
+                "title:")
+                    if [ "${S_TITLE}" = "1" ]; then
+                        SEARCH_DATA="${SEARCH_DATA}${FIELD#title:}${_NL}"
+                    fi
+                    ;;
+
+                "tags:")
+                    if [ "${S_TAGS}" = "1" ]; then
+                        SEARCH_DATA="${SEARCH_DATA}${FIELD#tags:}${_NL}"
+                    fi
+                    ;;
+
+                "comment:")
+                    if [ "${S_COMMENT}" = "1" ]; then
+                        SEARCH_DATA="${SEARCH_DATA}${FIELD#comment:}${_NL}"
+                    fi
+                    ;;
+            esac
+        done
+
+        if pn "${SEARCH_DATA}" | \
+            grep -E "${QUERY}" >/dev/null 2>&1; then
+
+            pn "${URL}"
+        fi
+    done
+}
+## }}}
+
+
+## Handle command {{{
+if [ "$#" -lt 1 ]; then
+    usage
+    exit 0
+fi
+
+case "$(p "$1" | tr '[:upper:]' '[:lower:]')" in
+    "add")
+        if [ "$#" -lt 2 ]; then
+            pn '[E]: Missing <url> argument to `'"$1"'`' >&2
+            usage
+            exit 101
+        fi
+
+        shift 1
+        cmd_add "$@"
+        exit "$?"
+        ;;
+
+    "list")
+        shift 1
+        cmd_list "$@"
+        exit "$?"
+        ;;
+
+    "show")
+        if [ "$#" -lt 2 ]; then
+            pn '[E]: Missing <url> argument to `'"$1"'`' >&2
+            usage
+            exit 101
+        fi
+
+        shift 1
+        cmd_show "$@"
+        exit "$?"
+        ;;
+
+    "remove")
+        if [ "$#" -lt 2 ]; then
+            pn '[E]: Missing <url> argument to `'"$1"'`' >&2
+            usage
+            exit 101
+        fi
+
+        cmd_remove "$2"
+        exit "$?"
+        ;;
+
+    "search")
+        if [ "$#" -lt 2 ]; then
+            pn '[E]: Missing <query> argument to `'"$1"'`' >&2
+            usage
+            exit 101
+        fi
+
+        shift 1
+        cmd_search "$@"
+        exit "$?"
+        ;;
+
+    *)
+        pn '[E]: Unknown command: '"$1" >&2
+        usage
+        exit 101
+        ;;
+esac
+## }}}
