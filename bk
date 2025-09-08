@@ -97,7 +97,7 @@ cmd_add() {
     ## }}}
 
     local B64
-    B64="$(p "${URL}" | base64 | tr '/' '_')"
+    B64="$(p "${URL}" | base64 -w0 | tr '/' '_')"
 
     if [ -e "${HOME}/.bk/${B64}" ] && [ "${OVERWRITE}" != "1" ]; then
         pn '[W]: Aborting since bookmark exists and no overwrite flag' >&2
@@ -160,7 +160,7 @@ cmd_show() {
     local URL="$1"; shift 1
 
     local B64
-    B64="$(p "${URL}" | base64 | tr '/' '_')"
+    B64="$(p "${URL}" | base64 -w0 | tr '/' '_')"
 
     if ! [ -e "${HOME}/.bk/${B64}" ]; then
         pn '[E]: URL not found in bookmarks: '"$URL" >&2
@@ -222,7 +222,7 @@ cmd_remove() {
     fi
 
     local B64
-    B64="$(p "${URL}" | base64 | tr '/' '_')"
+    B64="$(p "${URL}" | base64 -w0 | tr '/' '_')"
 
     if ! [ -e "${HOME}/.bk/${B64}" ]; then
         pn '[E]: URL not found in bookmarks: '"$URL" >&2
