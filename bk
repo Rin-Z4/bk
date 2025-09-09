@@ -22,28 +22,29 @@ usage() {
         "  ${_PROG_NAME} <command> [args]" \
         '' \
         'Commands:' \
-        '  add <url> [-t <title>] [-c <comment>] [-x <tags>] [-o]' \
+        '  add <url> [-t <title>] [-c <comment>] [-x <tags>] [-p <path>] [-o]' \
         '  list [-m]' \
         '  show <url>' \
         '  remove <url>' \
-        '  search <query> [-u] [-t] [-c] [-x]' \
+        '  search <query> [-u] [-t] [-c] [-x] [-p]' \
         '' \
         'Notes:' \
         '  an existing bookmark for an url will not be overwritten when adding unless' \
         '    -o is used' \
         '  `remove` expects an URL exactly matching one from `list`' \
         '  `search` by default searches in all fields, you can specify combination of' \
-        '    -u (urls), -t (titles), -c (comments), -x (tags) to specify which fields' \
-        '    are to be included' \
+        '    -u (urls), -t (titles), -c (comments), -x (tags), -p (path) to specify' \
+        '    which fields are to be included' \
         '  the tags option is stored literally (it is not split for by e.g. , or \t)' \
-        '  searching is done via grep -E'
+        '  searching is done via grep -E' \
+        '  the <path> has no special meaning; it'\''s just for organization'
 }
 
 
 ## Add bookmark {{{
 cmd_add() {
     local URL="$1"; shift 1
-    local TITLE="" COMMENT="" TAGS="" OVERWRITE="0"
+    local TITLE="" COMMENT="" TAGS="" _PATH="" OVERWRITE="0"
 
     if ! [ -d "${HOME}/.bk" ]; then
         if [ -e "${HOME}/.bk" ]; then
@@ -83,6 +84,15 @@ cmd_add() {
                 shift 2
                 ;;
 
+            "-p")
+                if [ "$#" -lt 2 ]; then
+                    pn '[E]: No argument for '"$1" >&2
+                    return 101
+                fi
+                _PATH="$2"
+                shift 2
+                ;;
+
             "-o")
                 OVERWRITE="1"
                 shift 1
@@ -105,9 +115,10 @@ cmd_add() {
     fi
 
     printf '%s'"${_FS}" \
-        "title:$TITLE" \
-        "comment:$COMMENT" \
-        "tags:$TAGS" \
+        "title:${TITLE}" \
+        "comment:${COMMENT}" \
+        "tags:${TAGS}" \
+        "path:${_PATH}" \
             > "${HOME}/.bk/${B64}"
 
     return 0
@@ -170,7 +181,7 @@ cmd_show() {
     local DATA
     DATA="$(cat "${HOME}/.bk/${B64}")"
 
-    local TITLE="" COMMENT="" TAGS=""
+    local TITLE="" COMMENT="" TAGS="" _PATH=""
     local FIELD F_TYPE
     for FIELD in ${DATA}; do
         F_TYPE="$(p "${FIELD}" | grep -Eoa '^[^:]+:' 2>/dev/null)"
@@ -182,6 +193,8 @@ cmd_show() {
                 COMMENT="${FIELD#comment:}" ;;
             "tags:")
                 TAGS="${FIELD#tags:}" ;;
+            "path:")
+                _PATH="${FIELD#path:}" ;;
             *)
                 pn '[E]: Unrecognized field type `'"${F_TYPE%:}"'` in ~/.bk/'"${B64}" >&2
                 return 1
@@ -194,6 +207,11 @@ cmd_show() {
     if [ -n "${TITLE}" ]; then
         pn "Title:"
         pn "${TITLE}" | sed 's/^/  /'
+    fi
+
+    if [ -n "${_PATH}" ]; then
+        pn "Path:"
+        pn "${_PATH}" | sed 's/^/  /'
     fi
 
     if [ -n "${TAGS}" ]; then
@@ -237,7 +255,7 @@ cmd_remove() {
 ## Search bookmarks {{{
 cmd_search() {
     local QUERY="$1"; shift 1
-    local S_URL="0" S_TITLE="0" S_COMMENT="0" S_TAGS="0"
+    local S_URL="0" S_TITLE="0" S_COMMENT="0" S_PATH="0" S_TAGS="0"
 
     ## Handle parsing arguments {{{
     while [ "$#" -gt 0 ]; do
@@ -262,6 +280,11 @@ cmd_search() {
                 shift 1
                 ;;
 
+            "-p")
+                S_PATH="1"
+                shift 1
+                ;;
+
             *)
                 pn '[E]: Unknown option to `search`: '"$1" >&2
                 return 101
@@ -278,7 +301,7 @@ cmd_search() {
             sed 's@^.*/@@' | \
             tr "${_NL}" "${_FS}")"
 
-    if [ "${S_URL}${S_TITLE}${S_COMMENT}${S_TAGS}" = "0000" ]; then
+    if [ "${S_URL}${S_TITLE}${S_COMMENT}${S_TAGS}${S_PATH}" = "00000" ]; then
         local _PATHS=""
 
         local BKMK
@@ -334,6 +357,12 @@ cmd_search() {
                 "comment:")
                     if [ "${S_COMMENT}" = "1" ]; then
                         SEARCH_DATA="${SEARCH_DATA}${FIELD#comment:}${_NL}"
+                    fi
+                    ;;
+
+                "path:")
+                    if [ "${S_PATH}" = "1" ]; then
+                        SEARCH_DATA="${SEARCH_DATA}${FIELD#path:}${_NL}"
                     fi
                     ;;
             esac
